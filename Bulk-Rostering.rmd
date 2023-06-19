@@ -1,0 +1,157 @@
+---
+title: "Bulk Rostering Sing In Analysis"
+author: "Sajad Ghashami"
+date: "2023-05-24"
+output: 
+   html_document:
+     code_folding: hide
+     theme: cerulean
+---
+
+```{=html}
+<style type="text/css">
+.main-container {
+  max-width: 1400px;
+  margin-left: auto;
+  margin-right: auto;
+}
+</style>
+```
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.align = 'center')
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+library(tidyverse)
+library(DBI)
+library(rmarkdown)
+library(ggpubr)
+library(data.table)
+library(knitr)
+library(plotly)
+library(rsconnect)
+library(reactable)
+library(moments)
+library(downloadthis)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+con <- DBI::dbConnect(odbc::odbc(),
+                      #Snowflake
+                      #SnowflakeDSIIDriver
+                      Driver       = "SnowflakeDSIIDriver",
+                      Server       = "ed87949.us-east-1.snowflakecomputing.com",
+                      UID          = rstudioapi::askForPassword("Database user"),
+                      PWD          = rstudioapi::askForPassword("Database password"),
+                      Database     = "EDW",
+                      Warehouse    = "shiny_app",
+                      Schema       = "dim"
+                      #,
+                      #authenticator = "externalbrowser"
+                      )
+mywh <- DBI::dbSendQuery(con, 'use role shiny_app_role')
+mywh <- DBI::dbSendQuery(con, 'use warehouse shiny_app')
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+base_table <- DBI::dbGetQuery(con,
+             "
+WITH bulk_rostereded_users_sign_in_history AS ( 
+SELECT
+    usinbd.authentication_type  AS authentication_type,
+    users.user_id  AS user_id,
+    users.email  AS email,
+    usinbd.date_created AS sign_in_date,
+    tsbd.newsela_school_id AS any_newsela_school_id,
+    COUNT(DISTINCT (usinbd.signin_record_id)) AS count_of_signin_record_id
+FROM fact.user_signin_by_date AS usinbd
+INNER JOIN dim.users AS users 
+     ON (usinbd.user_key) = (users.user_key)
+INNER JOIN edw.fact.teacher_schools_by_date AS tsbd
+     ON (usinbd.user_id)= (tsbd.user_id)
+     AND usinbd.date_created = tsbd.teacher_school_membership_date
+WHERE (users.is_teacher ) AND users.is_bulk_rostered
+       AND usinbd.newsela_school_id IN ('61337', '57829', '14437', '13838')
+GROUP BY    
+    1,
+    2,
+    3,
+    4,
+    5
+)
+SELECT usih.*,
+       brs.newsela_date_created AS first_school_bulk_rostered_date
+       ,brs.rostered_provider
+
+FROM bulk_rostereded_users_sign_in_history AS usih
+JOIN data_hub.dim.bulk_roster_schools AS brs
+     ON usih.any_newsela_school_id=brs.newsela_school_id
+     ")
+
+```
+
+## Query to create the sign in history
+
+Click `Code` to Show/hide it
+
+```{r eval=FALSE}
+"
+WITH bulk_rostereded_users_sign_in_history AS ( 
+SELECT
+    usinbd.authentication_type  AS authentication_type,
+    users.user_id  AS user_id,
+    users.email  AS email,
+    usinbd.date_created AS sign_in_date,
+    tsbd.newsela_school_id AS any_newsela_school_id,
+    COUNT(DISTINCT (usinbd.signin_record_id)) AS count_of_signin_record_id
+FROM fact.user_signin_by_date AS usinbd
+INNER JOIN dim.users AS users 
+     ON (usinbd.user_key) = (users.user_key)
+INNER JOIN edw.fact.teacher_schools_by_date AS tsbd
+     ON (usinbd.user_id)= (tsbd.user_id)
+     AND usinbd.date_created = tsbd.teacher_school_membership_date
+WHERE (users.is_teacher ) AND users.is_bulk_rostered
+       AND usinbd.newsela_school_id IN ('61337', '57829', '14437', '13838')
+GROUP BY    
+    1,
+    2,
+    3,
+    4,
+    5
+)
+SELECT usih.*,
+       brs.newsela_date_created AS first_school_bulk_rostered_date
+       ,brs.rostered_provider
+
+FROM bulk_rostereded_users_sign_in_history AS usih
+JOIN data_hub.dim.bulk_roster_schools AS brs
+     ON usih.any_newsela_school_id=brs.newsela_school_id
+     "
+```
+
+## How the data looks like
+
+```{r , out.width = "100%"}
+head(base_table) %>%
+  kable()
+```
+
+## Results
+
+The vertical dashed black line is when the school is Bulk Rostered.  
+
+```{r , out.width = "100%",  fig.height= 10}
+linechart <- ggplot(base_table, aes(x = SIGN_IN_DATE, y = COUNT_OF_SIGNIN_RECORD_ID, color = AUTHENTICATION_TYPE)) +
+  geom_line() +
+  geom_vline(aes(xintercept = as.numeric(FIRST_SCHOOL_BULK_ROSTERED_DATE)),
+             linetype = "dashed", color = "black")  +
+  facet_wrap(. ~ ANY_NEWSELA_SCHOOL_ID, ncol=1, labeller = label_both) +
+  labs(x = "SIGN_IN_DATE", y = "COUNT_OF_SIGNIN_RECORD_ID") +
+   coord_cartesian( ylim = c(-2, NA)) +
+  theme(panel.spacing = unit(4, "lines"))
+
+
+plotly_obj <- ggplotly(linechart)
+
+plotly_obj
+```
